@@ -7,12 +7,34 @@ import scipy
 from scipy import misc
 from scipy import io
 import pickle
+import PIL.Image as Image
 from utils.ops import *
+
+def _dataset_info(data_dir, txt_labels):
+    with open(txt_labels, 'r') as f:
+        images_list = f.readlines()
+
+    images = np.zeros((len(images_list), 222, 222, 3),dtype=float)
+    labels = np.zeros(len(images_list), dtype=int)
+    idx = 0
+    for row in images_list:
+        row = row.split(' ')
+        img = np.array(Image.open(data_dir+"/"+row[0]).convert('RGB').resize((222,222))) / 255. # HWC
+        images[idx] = img
+        labels[idx] = int(row[1])
+        idx += 1
+    return images, labels
+
+def load_pacs(data_dir, dname='photo', split='train'):
+    
+    images, labels = _dataset_info(data_dir, data_dir+"/PACS/kfold/%s_%s.txt" % (dname, split))
+    print('PACS-%s %s dataset loaded, size: %d' % (dname, split, images.shape[0]))
+    return images, labels
 
 def load_svhn(data_dir, split='train'):
     print('Loading SVHN dataset.')
     image_file = 'train_32x32.mat' if split == 'train' else 'test_32x32.mat'
-    image_dir = os.path.join(data_dir, 'svhn', image_file)
+    image_dir = os.path.join(data_dir, 'Digits/svhn', image_file)
     svhn = io.loadmat(image_dir)
     images = np.transpose(svhn['X'], [3, 0, 1, 2]) / 255.
     labels = svhn['y'].reshape(-1)
@@ -20,22 +42,25 @@ def load_svhn(data_dir, split='train'):
     return images, labels
 
 def load_mnist(data_dir, split='train'):
-
     print('Loading MNIST dataset.')
     image_file = 'train.pkl' if split == 'train' else 'test.pkl'
-    image_dir = os.path.join(data_dir, 'mnist', image_file)
+    image_dir = os.path.join(data_dir, 'Digits/MNIST', image_file)
     with open(image_dir, 'rb') as f:
         mnist = pickle.load(f, encoding="bytes")
     images = mnist[b'X']
     labels = mnist[b'y']
     images = images / 255.
     images = np.stack((images, images, images), axis=3)  # grayscale to rgb
-    return np.squeeze(images[:10000]), labels[:10000]
+
+    images = np.squeeze(images[:10000])
+    labels = labels[:10000]
+
+    return images, labels
 
 def load_mnist_m(data_dir, split='train'):
     print('Loading MNIST_M dataset.')
 
-    image_dir = os.path.join(data_dir, 'mnist_m')
+    image_dir = os.path.join(data_dir, 'Digits/mnist_m')
 
     if split == 'train':
         data_dir = os.path.join(image_dir, 'mnist_m_train')
@@ -63,7 +88,7 @@ def load_mnist_m(data_dir, split='train'):
 def load_syn(data_dir, split='train'):
     print('Loading SYN dataset.')
     image_file = 'synth_train_32x32.mat' if split == 'train' else 'synth_test_32x32.mat'
-    image_dir = os.path.join(data_dir, 'syn', image_file)
+    image_dir = os.path.join(data_dir, 'Digits/syn', image_file)
     syn = scipy.io.loadmat(image_dir)
     images = np.transpose(syn['X'], [3, 0, 1, 2])
     labels = syn['y'].reshape(-1)
@@ -75,7 +100,7 @@ def load_usps(data_dir, split='train'):
     print('Loading USPS dataset.')
     image_file = 'usps_train_32x32.pkl' if split == 'train' else 'usps_test_32x32.pkl'
     # image_file = 'usps_32x32.pkl'
-    image_dir = os.path.join(data_dir, 'usps', image_file)
+    image_dir = os.path.join(data_dir, 'Digits/usps', image_file)
     with open(image_dir, 'rb') as f:
         usps = pickle.load(f, encoding="bytes")
     images = usps['X']
@@ -102,16 +127,19 @@ def load_test_data(data_dir, target):
         target_test_images, target_test_labels = load_usps(data_dir, split='test')
     elif target == 'mnist_m':
         target_test_images, target_test_labels = load_mnist_m(data_dir, split='test')
+    else:
+        target_test_images, target_test_labels = load_pacs(data_dir, target, split='test')
     return target_test_images, target_test_labels
 
-def asarray_and_reshape(imgs, labels):
+def asarray_and_reshape(imgs, labels, img_shape):
     imgs = np.asarray(imgs)
     labels = np.asarray(labels)
-    imgs = np.reshape(imgs, (-1, 3, 32, 32))
+    # B X C X H X W
+    imgs = np.reshape(imgs, (-1, img_shape[3],img_shape[1], img_shape[2]))
     labels = np.reshape(labels, (-1,))
     return imgs, labels
 
-def construct_datasets(data_dir, batch_size, kwargs):
+def construct_datasets(data_dir, batch_size, kwargs, sd='mnist'):
 
     def data2loader(imgs, labels):
         assert len(imgs) == len(labels)
@@ -122,10 +150,14 @@ def construct_datasets(data_dir, batch_size, kwargs):
         X_loader = torch.utils.data.DataLoader(X_dataset, batch_size=batch_size, shuffle=True, drop_last=True, **kwargs)
         return X_loader
 
-    train_imgs, train_labels = load_mnist(data_dir, 'train')
-    val_imgs, val_labels = load_mnist(data_dir, 'test')
+    if sd == 'mnist':
+        train_imgs, train_labels = load_mnist(data_dir, 'train')
+        val_imgs, val_labels = load_mnist(data_dir, 'test')
+    else:
+        train_imgs, train_labels = load_pacs(data_dir, sd, 'train')
+        val_imgs, val_labels = load_pacs(data_dir, sd, 'test')
 
-    return data2loader(train_imgs, train_labels), data2loader(val_imgs, val_labels)
+    return data2loader(train_imgs, train_labels), data2loader(val_imgs, val_labels), train_imgs.shape
 
 def validate(val_loader, model):
     """Perform validation on the validation set"""
@@ -151,7 +183,7 @@ def validate(val_loader, model):
 
     return top1.avg
 
-def evaluation(model, data_dir, batch_size, kwargs):
+def evaluation(model, data_dir, batch_size, kwargs, sd='mnist'):
 
     def data2loader(imgs, labels):
         assert len(imgs) == len(labels)
@@ -165,7 +197,12 @@ def evaluation(model, data_dir, batch_size, kwargs):
     model.eval()
     params = list(model.parameters())
     accs = []
-    target_domains = ['svhn', 'mnist_m', 'syn', 'usps']
+    
+    if sd == 'mnist':
+        target_domains = ['svhn', 'mnist_m', 'syn', 'usps']
+    else:
+        target_domains = [item for item in ['photo', 'art_painting', 'cartoon', 'sketch'] if item != sd ]
+    
     for td in target_domains:
         print(td)
         target_test_images, target_test_labels = load_test_data(data_dir, td)
@@ -190,6 +227,6 @@ def evaluation(model, data_dir, batch_size, kwargs):
         accs.append(top1.avg)
         print(' * Prec@1 {top1.avg:.3f}'.format(top1=top1))
 
-    avg_acc = np.mean(accs[1:])
+    avg_acc = np.mean(accs)
     accs.append(avg_acc)
     print('avg acc', avg_acc)

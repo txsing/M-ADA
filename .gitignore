@@ -1,0 +1,10 @@
+*.pyc
+*.pkl
+*.DS_Store
+models/pretrained/*
+*/.ipynb_checkpoints/*
+*/*/.ipynb_checkpoints/*
+.ipynb_checkpoints/*
+/data/datasets/*
+/results/*.txt
+runs/*

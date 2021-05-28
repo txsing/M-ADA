@@ -5,21 +5,23 @@ import torch.optim
 import torch.utils.data
 import torch.nn as nn
 from torch.autograd import Variable
-from models.ada_conv import ConvNet, WAE, Adversary
+from models.ada_conv import ConvNet, WAE, Adversary, ResNet18
+from torch.utils import model_zoo
+from torchvision.models.resnet import BasicBlock, model_urls, Bottleneck
 import numpy
+import random
 from metann import Learner
 from utils.digits_process_dataset import *
-
-torch.manual_seed(0)
-numpy.random.seed(0)
+from utils import utils
 
 parser = argparse.ArgumentParser(description='Training on Digits')
-parser.add_argument('--data_dir', default='/home/users/hlli/Datasets', type=str,
-                    help='dataset dir')
 parser.add_argument('--dataset', default='mnist', type=str,
                     help='dataset mnist or cifar10')
-parser.add_argument('--num_iters', default=10001, type=int,
+
+parser.add_argument('--num_iters', default=10001, type=int, # MNIST
+# parser.add_argument('--num_iters', default=1671, type=int, # PACS
                     help='number of total iterations to run')
+
 parser.add_argument('--start_iters', default=0, type=int,
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=32, type=int,
@@ -32,28 +34,46 @@ parser.add_argument('--gamma', default=1, type=float,
                     help='coefficient of constraint')
 parser.add_argument('--beta', default=2000, type=float,
                     help='coefficient of relaxation')
+
 parser.add_argument('--T_adv', default=25, type=int,
+# parser.add_argument('--T_adv', default=5, type=int, # PACS
                     help='iterations for adversarial training')
+
 parser.add_argument('--advstart_iter', default=0, type=int,
                     help='iterations for pre-train')
+
 parser.add_argument('--K', default=3, type=int,
+# parser.add_argument('--K', default=0, type=int,
                     help='number of augmented domains')
 parser.add_argument('--T_min', default=100, type=int,
+# parser.add_argument('--T_min', default=10, type=int,
                     help='intervals between domain augmentation')
 parser.add_argument('--print-freq', '-p', default=1000, type=int,
+# parser.add_argument('--print-freq', '-p', default=100, type=int,
                     help='print frequency (default: 10)')
+
 parser.add_argument('--resume', default=None, type=str,
                     help='path to saved checkpoint (default: none)')
 parser.add_argument('--name', default='Digits', type=str,
                     help='name of experiment')
 parser.add_argument('--mode',  default='train', type=str,
                     help='train or test')
-parser.add_argument('--GPU_ID', default=0, type=int,
+parser.add_argument('--GPU_ID', "-g", default=0, type=int,
                     help='GPU_id')
-
+parser.add_argument('--cov_weight', "-w", default=0.1, type=float,
+                    help='neutron cov weight')
+parser.add_argument('--activate_threshold', "-t", default=0.005, type=float,
+                    help='neutron activation threshold')
+parser.add_argument('--cover_ratio', "-r", default=1.0, type=float,
+                    help='re-activation ratio')
+parser.add_argument('--cov_mode', "-m", default=4, type=int,
+                    help='coverage mode')
 def main():
+    torch.autograd.set_detect_anomaly(True)
     global args
     args = parser.parse_args()
+    args.data_dir = os.path.expanduser('~/Datasets')
+
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # see issue #152 on stackoverflow
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.GPU_ID)
 
@@ -62,7 +82,18 @@ def main():
     kwargs = {'num_workers': 4}
 
     # create model, use Learner to wrap it
-    model = Learner(ConvNet())
+    model = None
+    if args.dataset == 'mnist':
+        model = Learner(ConvNet())
+    elif args.dataset in ['photo']:
+        m = ResNet18()
+        m.load_state_dict(model_zoo.load_url(model_urls['resnet18']), strict=False)
+        model = Learner(m)
+    elif args.dataset in ['cifar10']:
+        print("ToBeDone")
+    else:
+        print("Error")
+    
     model = model.cuda()
     cudnn.benchmark = True
 
@@ -81,15 +112,18 @@ def main():
 
     if args.mode == 'train':
         train(model, exp_name, kwargs)
-        evaluation(model, args.data_dir, args.batch_size, kwargs)
+        evaluation(model, args.data_dir, args.batch_size, kwargs, sd=args.dataset)
     else:
-        evaluation(model, args.data_dir, args.batch_size, kwargs)
+        evaluation(model, args.data_dir, args.batch_size, kwargs, sd=args.dataset)
 
 def train(model, exp_name, kwargs):
     print('Pre-train wae')
     # construct train and val dataloader
-    train_loader, val_loader = construct_datasets(args.data_dir, args.batch_size, kwargs)
-    wae = WAE().cuda()
+    # data shape: B X H X W X Channels
+    train_loader, val_loader, img_shape = construct_datasets(args.data_dir, args.batch_size, kwargs, args.dataset)
+    wae_input_dims = img_shape[1]*img_shape[2]*img_shape[3]
+    wae = WAE(wae_input_dims).cuda()
+
     wae_optimizer = torch.optim.Adam(wae.parameters(), lr=1e-3)
     discriminator = Adversary().cuda()
     d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=1e-3)
@@ -111,6 +145,9 @@ def train(model, exp_name, kwargs):
     counter_k = 0
 
     for t in range(args.start_iters, args.num_iters):
+        if t % len(train_loader) == 0:
+            layer_neuron_activated_dict = {}
+            layer_neuron_activated_dict_mt = {}
 
         batch_time = AverageMeter()
         losses = AverageMeter()
@@ -171,7 +208,7 @@ def train(model, exp_name, kwargs):
 
                 virtual_test_images.append(input_aug.data.cpu().numpy())
                 virtual_test_labels.append(target_aug.data.cpu().numpy())
-            virtual_test_images, virtual_test_labels = asarray_and_reshape(virtual_test_images, virtual_test_labels)
+            virtual_test_images, virtual_test_labels = asarray_and_reshape(virtual_test_images, virtual_test_labels, img_shape)
 
             if counter_k == 0:
                 only_virtual_test_images = np.copy(virtual_test_images)
@@ -198,7 +235,7 @@ def train(model, exp_name, kwargs):
 
             # re-train a wae on  the latest domain augmentation
             if counter_k + 1 < args.K:
-                wae = WAE().cuda()
+                wae = WAE(wae_input_dims).cuda()
                 wae_optimizer = torch.optim.Adam(wae.parameters(), lr=1e-3)
                 discriminator = Adversary().cuda()
                 d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=1e-3)
@@ -217,9 +254,23 @@ def train(model, exp_name, kwargs):
 
         input, target = input.cuda(non_blocking=True).float(), target.cuda(non_blocking=True).long()
         params = list(model.parameters())
-        output, _ = model.functional(params, True, input)
-        loss = criterion(output, target)
+        output, layer_output_dict = model.functional(params, True, input)
 
+        neuron_cover_str = "None"
+        if args.cov_mode == 1 or args.cov_mode == 4:
+            loss = criterion(output, target)
+        else:
+            ### Neutron Cov Loss - BEGIN
+            layer_neuron_activated_dict, total_act_nron, total_nron = utils.update_coverage_v2(
+                layer_output_dict, args.activate_threshold, layer_neuron_activated_dict
+            )
+            neurons_2b_covered, all_not_covered  = utils.neuron_to_cover(layer_neuron_activated_dict, args.cover_ratio)
+            neuron_coverage = utils.cal_neurons_cov_loss(layer_output_dict, neurons_2b_covered)
+            neuron_cover_str = "cov%d-act%d" % (len(neurons_2b_covered), total_act_nron)
+            loss = criterion(output, target) - args.cov_weight * neuron_coverage
+            ### Neutron Cov Loss - END
+
+        neuron_cover_str_mt = 'None'
         if counter_k == 0:
             optimizer.zero_grad()
             loss.backward(retain_graph=True)
@@ -233,12 +284,28 @@ def train(model, exp_name, kwargs):
                 input_b, target_b = next(aug_loader_iter)
 
             input_b, target_b = input_b.cuda(non_blocking=True), target_b.cuda(non_blocking=True).long()
-            output_b, _ = model.functional(params, True, input_b)
-            loss_b = criterion(output_b, target_b)
+            output_b, layer_output_dict_mt = model.functional(params, True, input_b)
+
+            neuron_cover_str_mt = 'None'
+            if args.cov_mode == 2 or args.cov_mode == 4:
+                loss_b = criterion(output_b, target_b)
+            else:
+                ### Neutron Cov Loss - BEGIN
+                layer_neuron_activated_dict_mt, total_act_nron_mt, total_nron_mt = utils.update_coverage_v2(
+                    layer_output_dict_mt, args.activate_threshold, layer_neuron_activated_dict_mt
+                )
+
+                neurons_2b_covered_mt, all_not_covered_mt  = utils.neuron_to_cover(layer_neuron_activated_dict_mt, args.cover_ratio)
+                neuron_coverage_mt = utils.cal_neurons_cov_loss(layer_output_dict_mt, neurons_2b_covered_mt)
+                neuron_cover_str_mt = "cov%d-act%d" % (len(neurons_2b_covered_mt), total_act_nron_mt)
+                loss_b = criterion(output_b, target_b)  - args.cov_weight * neuron_coverage_mt
+                ### Neutron Cov Loss - END
+
             loss_combine = (loss + loss_b) / 2
             optimizer.zero_grad()
-            loss_combine.backward(retain_graph=True)
+            loss_combine.backward()
 
+        cover_str = neuron_cover_str+'/'+neuron_cover_str_mt
         optimizer.step()
         # measure accuracy and record loss
         prec1 = accuracy(output.data, target, topk=(1,))[0]
@@ -246,8 +313,8 @@ def train(model, exp_name, kwargs):
         top1.update(prec1.item(), input.size(0))
         # measure elapsed time
         batch_time.update(time.time() - end)
-
         if t % args.print_freq == 0:
+            print(cover_str)
             print('Iter: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
@@ -282,6 +349,11 @@ def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
     model.train()
     train_loss = 0
 
+    input_dims = None
+    for batch_idx, (data, _) in enumerate(new_aug_loader):
+        input_dims = data.shape[1] * data.shape[2] * data.shape[3]
+        break
+
     for batch_idx, (data, _) in enumerate(new_aug_loader):
         input_comb = data.cuda(non_blocking=True).float()
         optimizer.zero_grad()
@@ -300,7 +372,7 @@ def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
         total_D_loss.backward(retain_graph=True)
         d_optimizer.step()
 
-        BCE = F.binary_cross_entropy(recon_batch, input_comb.view(-1, 3072), reduction='sum')
+        BCE = F.binary_cross_entropy(recon_batch, input_comb.view(-1, input_dims), reduction='sum')
         Q_loss = F.binary_cross_entropy_with_logits(D_z_tilde + log_p_z, ones)
         loss = BCE + param * Q_loss
         loss.backward(retain_graph=True)
@@ -317,8 +389,11 @@ def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
           epoch, train_loss / len(new_aug_loader.dataset)))
 
 if __name__ == '__main__':
-    torch.manual_seed(9963)
+    seed_val = 9963
+    print("Using seed: %d!" % seed_val)
+    torch.manual_seed(seed_val)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    np.random.seed(9963)
+    np.random.seed(seed_val)
+    random.seed(seed_val)
     main()
