@@ -18,10 +18,8 @@ def resize_images(image_arrays, size=[32, 32]):
     return np.expand_dims(resized_image_arrays, 3)
 
 def download_and_process_mnist():
-    if not os.path.exists('./data/mnist'):
-        os.makedirs('./data/mnist')
 
-    mnist = input_data.read_data_sets(train_dir='./data/mnist')
+    mnist = input_data.read_data_sets(train_dir='～/Datasets/mnist')
 
     train = {'X': resize_images(mnist.train.images.reshape(-1, 28, 28)),
              'y': mnist.train.labels}
@@ -29,10 +27,10 @@ def download_and_process_mnist():
     test = {'X': resize_images(mnist.test.images.reshape(-1, 28, 28)),
             'y': mnist.test.labels}
 
-    with open('./data/mnist/train.pkl', 'wb') as f:
+    with open('～/Datasets/mnist/train.pkl', 'wb') as f:
         pickle.dump(train, f, protocol=-1)
 
-    with open('./data/mnist/test.pkl', 'wb') as f:
+    with open('～/Datasets/mnist/test.pkl', 'wb') as f:
         pickle.dump(test, f, protocol=-1)
 
 

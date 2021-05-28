@@ -14,7 +14,7 @@ torch.manual_seed(0)
 numpy.random.seed(0)
 
 parser = argparse.ArgumentParser(description='Training on Digits')
-parser.add_argument('--data_dir', default='data', type=str,
+parser.add_argument('--data_dir', default='/home/users/hlli/Datasets', type=str,
                     help='dataset dir')
 parser.add_argument('--dataset', default='mnist', type=str,
                     help='dataset mnist or cifar10')
@@ -81,6 +81,7 @@ def main():
 
     if args.mode == 'train':
         train(model, exp_name, kwargs)
+        evaluation(model, args.data_dir, args.batch_size, kwargs)
     else:
         evaluation(model, args.data_dir, args.batch_size, kwargs)
 
@@ -148,15 +149,15 @@ def train(model, exp_name, kwargs):
                 aug_optimizer = torch.optim.SGD([input_aug.requires_grad_()], args.lr_max)
 
                 if counter_k == 0:
-                    input_feat, output = model.functional(params, False, input_a, return_feat=True)
+                    input_feat, output, _ = model.functional(params, False, input_a, return_feat=True)
                     recon_batch, _, = wae(input_a)
                 else:
-                    input_feat, output = model.functional(params, False, input_comb, return_feat=True)
+                    input_feat, output, _ = model.functional(params, False, input_comb, return_feat=True)
                     recon_batch, _, = wae(input_comb)
 
                 # iteratively generate adversarial samples
                 for n in range(args.T_adv):
-                    input_aug_feat, output_aug = model.functional(params, False, input_aug, return_feat=True)
+                    input_aug_feat, output_aug, _ = model.functional(params, False, input_aug, return_feat=True)
                     recon_batch_aug, _, = wae(input_aug)
                     # Constraint
                     constraint = mse_loss(input_feat, input_aug_feat)
@@ -165,7 +166,7 @@ def train(model, exp_name, kwargs):
                     relaxation = mse_loss(recon_batch, recon_batch_aug)
                     adv_loss = -(args.beta * relaxation + ce_loss - args.gamma * constraint)
                     aug_optimizer.zero_grad()
-                    adv_loss.backward()
+                    adv_loss.backward(retain_graph=True)
                     aug_optimizer.step()
 
                 virtual_test_images.append(input_aug.data.cpu().numpy())
@@ -216,12 +217,12 @@ def train(model, exp_name, kwargs):
 
         input, target = input.cuda(non_blocking=True).float(), target.cuda(non_blocking=True).long()
         params = list(model.parameters())
-        output = model.functional(params, True, input)
+        output, _ = model.functional(params, True, input)
         loss = criterion(output, target)
 
         if counter_k == 0:
             optimizer.zero_grad()
-            loss.backward()
+            loss.backward(retain_graph=True)
         else:
             grads = torch.autograd.grad(loss, params, create_graph=True)
             params = [(param - args.lr * grad).requires_grad_() for param, grad in zip(params, grads)]
@@ -232,11 +233,11 @@ def train(model, exp_name, kwargs):
                 input_b, target_b = next(aug_loader_iter)
 
             input_b, target_b = input_b.cuda(non_blocking=True), target_b.cuda(non_blocking=True).long()
-            output_b = model.functional(params, True, input_b)
+            output_b, _ = model.functional(params, True, input_b)
             loss_b = criterion(output_b, target_b)
             loss_combine = (loss + loss_b) / 2
             optimizer.zero_grad()
-            loss_combine.backward()
+            loss_combine.backward(retain_graph=True)
 
         optimizer.step()
         # measure accuracy and record loss
@@ -296,13 +297,13 @@ def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
 
         total_D_loss = param * D_loss
         d_optimizer.zero_grad()
-        total_D_loss.backward()
+        total_D_loss.backward(retain_graph=True)
         d_optimizer.step()
 
         BCE = F.binary_cross_entropy(recon_batch, input_comb.view(-1, 3072), reduction='sum')
         Q_loss = F.binary_cross_entropy_with_logits(D_z_tilde + log_p_z, ones)
         loss = BCE + param * Q_loss
-        loss.backward()
+        loss.backward(retain_graph=True)
         train_loss += loss.item()
         optimizer.step()
 
@@ -316,4 +317,8 @@ def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
           epoch, train_loss / len(new_aug_loader.dataset)))
 
 if __name__ == '__main__':
+    torch.manual_seed(9963)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(9963)
     main()

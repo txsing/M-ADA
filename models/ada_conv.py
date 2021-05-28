@@ -1,34 +1,57 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from collections import OrderedDict
 
 class ConvNet(nn.Module):
     def __init__(self):
         super(ConvNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=5, stride=1, padding=0)
-        self.mp = nn.MaxPool2d(2)
-        self.relu1 = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=5, stride=1, padding=0)
-        self.relu2 = nn.ReLU(inplace=True)
-        self.fc1 = nn.Linear(128*5*5, 1024)
-        self.relu3 = nn.ReLU(inplace=True)
-        self.fc2 = nn.Linear(1024, 1024)
-        self.relu4 = nn.ReLU(inplace=True)
-        self.fc3 = nn.Linear(1024, 10)
+        self.conv1= nn.Sequential(
+            nn.Conv2d(3, 64, 5),
+            nn.ReLU(True)
+        )
+        self.max_pool1 = nn.MaxPool2d(2, 2)
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(64, 128, 5),
+            nn.ReLU(True)
+        )
+        self.max_pool2 = nn.MaxPool2d(2, 2)
+
+        self.fc1= nn.Sequential(
+            nn.Linear(128 * 5 * 5, 1024),
+            nn.ReLU(True)
+        )
+        self.fc2= nn.Sequential(
+            nn.Linear(1024, 1024),
+            nn.ReLU(True)
+        )
+        self.before_softmax = nn.Linear(1024, 10)
 
     def forward(self, x, return_feat=False):
-        in_size = x.size(0)
-        out1 = self.mp(self.relu1(self.conv1(x)))
-        out2 = self.mp(self.relu2(self.conv2(out1)))
-        out2 = out2.view(in_size, -1)
-        out3 = self.relu3(self.fc1(out2))
-        out4 = self.relu4(self.fc2(out3))
+        layers_output_dict = OrderedDict()
+
+        x = self.conv1(x)
+        layers_output_dict['conv1']=x
+        
+        x = self.max_pool1(x)
+        layers_output_dict['max_pool1']=x
+        
+        x = self.conv2(x)
+        layers_output_dict['conv2']=x
+        
+        x = self.max_pool2(x)
+        layers_output_dict['max_pool2']=x
+        
+        x = self.fc1(x.view(x.size(0), -1))
+        layers_output_dict['fc1']=x
+        
+        x = self.fc2(x)
+        layers_output_dict['fc2']=x
 
         if return_feat:
-            return out4, self.fc3(out4)
+            return x, self.before_softmax(x), layers_output_dict
         else:
-            return self.fc3(out4)
-
+            return self.before_softmax(x), layers_output_dict
 
 class WAE(nn.Module):
     def __init__(self):

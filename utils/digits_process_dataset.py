@@ -140,7 +140,7 @@ def validate(val_loader, model):
         target = target.cuda(non_blocking=True).long()
         input = input.cuda(non_blocking=True).float()
         with torch.no_grad():
-            output = model.functional(params, False, input)
+            output, _ = model.functional(params, False, input)
         # measure accuracy and record loss
         prec1 = accuracy(output.data, target, topk=(1,))[0]
         top1.update(prec1.item(), input.size(0))
@@ -179,7 +179,7 @@ def evaluation(model, data_dir, batch_size, kwargs):
             target = target.cuda(non_blocking=True).long()
             input = input.cuda(non_blocking=True).float()
             with torch.no_grad():
-                output = model.functional(params, False, input)
+                output, _ = model.functional(params, False, input)
             # measure accuracy and record loss
             prec1 = accuracy(output.data, target, topk=(1,))[0]
             top1.update(prec1.item(), input.size(0))
