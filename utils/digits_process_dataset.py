@@ -1,3 +1,4 @@
+import torchvision
 import numpy as np
 import time
 import torch.nn.parallel
@@ -24,6 +25,41 @@ def _dataset_info(data_dir, txt_labels):
         labels[idx] = int(row[1])
         idx += 1
     return images, labels
+
+"""
+Load datasets:
+    Shape: Channel X H X W
+
+"""
+def load_cifar(data_dir, dname='cifar10', split='train'):
+    if dname == 'cifar10':
+        return get_CIFAR_dataset(data_dir, split)
+    else:
+        return get_CIFAR_C_dataset(data_dir, dname, split, level=5)
+
+def get_CIFAR_dataset(data_dir, split):
+    trainset = torchvision.datasets.CIFAR10(root=data_dir, train=(split=='train'),
+                                            download=True, transform=None)
+    imgdata = trainset.data
+    labels = trainset.targets
+    print ('Loading CIFAR10 '+split+' dataset: '+str(len(labels)))
+    return imgdata, labels
+
+
+def get_CIFAR_C_dataset(data_dir, dname, split=None, level=1):    
+    if dname == 'cifar10':
+        return get_CIFAR_dataset('train')
+    
+    print ('Loading CIFAR-C {0} dataset at severity {1}'.format(dname, level))
+    imgdata = np.load(data_dir+'/CIFAR-10-C/'+dname+'.npy')
+    labels = np.load(data_dir+'/CIFAR-10-C/labels.npy')
+    
+    if level == 0:
+        return imgdata, labels
+    else:
+        start = (level - 1) * 10000
+        return imgdata[start:start + 10000], labels[start:start + 10000].tolist()
+    
 
 def load_pacs(data_dir, dname='photo', split='train'):
     
@@ -116,7 +152,6 @@ def load_usps(data_dir, split='train'):
     return images, labels
 
 def load_test_data(data_dir, target):
-
     if target == 'svhn':
         target_test_images, target_test_labels = load_svhn(data_dir, split='test')
     elif target == 'mnist':
@@ -127,6 +162,12 @@ def load_test_data(data_dir, target):
         target_test_images, target_test_labels = load_usps(data_dir, split='test')
     elif target == 'mnist_m':
         target_test_images, target_test_labels = load_mnist_m(data_dir, split='test')
+    elif target in ['fog','snow', 'frost',
+                       'zoom_blur', 'defocus_blur', 'glass_blur',
+                       'speckle_noise', 'shot_noise', 'impulse_noise',
+                       'jpeg_compression', 'pixelate', 'spatter', 'elastic_transform','gaussian_blur','saturate','brightness','contrast','gaussian_noise','motion_blur'
+                      ]:
+        target_test_images, target_test_labels = load_cifar(data_dir, target, split='test')
     else:
         target_test_images, target_test_labels = load_pacs(data_dir, target, split='test')
     return target_test_images, target_test_labels
@@ -153,6 +194,9 @@ def construct_datasets(data_dir, batch_size, kwargs, sd='mnist'):
     if sd == 'mnist':
         train_imgs, train_labels = load_mnist(data_dir, 'train')
         val_imgs, val_labels = load_mnist(data_dir, 'test')
+    elif sd == 'cifar10':
+        train_imgs, train_labels = load_cifar(data_dir, 'cifar10', 'train')
+        val_imgs, val_labels = load_cifar(data_dir, 'cifar10','test')
     else:
         train_imgs, train_labels = load_pacs(data_dir, sd, 'train')
         val_imgs, val_labels = load_pacs(data_dir, sd, 'test')
@@ -200,6 +244,12 @@ def evaluation(model, data_dir, batch_size, kwargs, sd='mnist'):
     
     if sd == 'mnist':
         target_domains = ['svhn', 'mnist_m', 'syn', 'usps']
+    elif sd == 'cifar10':
+        target_domains = ['fog','snow', 'frost',
+                       'zoom_blur', 'defocus_blur', 'glass_blur',
+                       'speckle_noise', 'shot_noise', 'impulse_noise',
+                       'jpeg_compression', 'pixelate', 'spatter', 'elastic_transform','gaussian_blur','saturate','brightness','contrast','gaussian_noise','motion_blur'
+                      ]
     else:
         target_domains = [item for item in ['photo', 'art_painting', 'cartoon', 'sketch'] if item != sd ]
     

@@ -5,7 +5,7 @@ import torch.optim
 import torch.utils.data
 import torch.nn as nn
 from torch.autograd import Variable
-from models.ada_conv import ConvNet, WAE, Adversary, ResNet18
+from models.ada_conv import ConvNet, WAE, Adversary, ResNet18, WRN_16_4
 from torch.utils import model_zoo
 from torchvision.models.resnet import BasicBlock, model_urls, Bottleneck
 import numpy
@@ -90,7 +90,7 @@ def main():
         m.load_state_dict(model_zoo.load_url(model_urls['resnet18']), strict=False)
         model = Learner(m)
     elif args.dataset in ['cifar10']:
-        print("ToBeDone")
+        model = Learner(WRN_16_4())
     else:
         print("Error")
     
