@@ -1,0 +1,10 @@
+Using seed: 9963!
+Pre-train wae
+Files already downloaded and verified
+Loading CIFAR10 train dataset: 50000
+Files already downloaded and verified
+Loading CIFAR10 test dataset: 10000
+Train Epoch: 1 [0/50000 (0%)]	Loss: -15640.650391
+====> Epoch: 1 Average loss: -5687052.6594
+Train Epoch: 2 [0/50000 (0%)]	Loss: -9939566.000000
+====> Epoch: 2 Average loss: -10098989.1123

@@ -80,13 +80,67 @@ class WAE(nn.Module):
         z = self.encode(x.view(-1, self.input_dims))
         return self.decode(z), z
 
+class WAE_Cifar(nn.Module):
+    def __init__(self, input_dims):
+        super(WAE_Cifar, self).__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.conv3= nn.Conv2d(32, 32, kernel_size=3)
+        self.bn3 = nn.BatchNorm2d(32)
+        self.conv4= nn.Conv2d(32, 32, kernel_size=3)
+        self.bn4 = nn.BatchNorm2d(32)
+        
+        self.fc1 = nn.Linear(18432, 1024) # 32 * 24 * 24
+        self.bn5 = nn.BatchNorm1d(1024)
+        self.fc2 = nn.Linear(1024, 512)
+        self.bn6 = nn.BatchNorm1d(512)
+        
+        self.fc3 = nn.Linear(512, 1024)
+        self.bn7 = nn.BatchNorm1d(1024)
+        self.fc4 = nn.Linear(1024, 18432)
+        self.bn8 = nn.BatchNorm1d(18432)
+        
+        self.conv5 = nn.ConvTranspose2d(32, 32, kernel_size=3)
+        self.bn9 = nn.BatchNorm2d(32)
+        self.conv6 = nn.ConvTranspose2d(32, 32, kernel_size=3)
+        self.bn10 = nn.BatchNorm2d(32)
+        self.conv7= nn.ConvTranspose2d(32, 16, kernel_size=3)
+        self.bn11 = nn.BatchNorm2d(16)
+        self.conv8= nn.ConvTranspose2d(16, 3, kernel_size=3)
+
+    def encode(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = F.relu(self.bn4(self.conv4(x)))
+        x = x.view(-1, 18432) # 32 * 24 * 24
+        x = F.relu(self.bn5(self.fc1(x)))
+        x = F.relu(self.bn6(self.fc2(x)))
+        return x
+
+    def decode(self, z):
+        z = F.relu(self.bn7(self.fc3(z)))
+        z = F.relu(self.bn8(self.fc4(z)))
+        z = z.view(-1, 32, 24, 24)
+        z = F.relu(self.bn9(self.conv5(z)))
+        z = F.relu(self.bn10(self.conv6(z)))
+        z = F.relu(self.bn11(self.conv7(z)))
+        z = torch.sigmoid(self.conv8(z)) # why sigmoid?
+        return z
+
+    def forward(self, x):
+        z = self.encode(x)
+        return self.decode(z), z
+
 class Adversary(nn.Module):
     """Adversary architecture(Discriminator) for WAE-GAN."""
     def __init__(self, z_dim=20):
         super(Adversary, self).__init__()
         self.z_dim = z_dim
         self.net = nn.Sequential(
-            nn.Linear(20, 128),
+            nn.Linear(z_dim, 128),
             nn.ReLU(True),
             nn.Linear(128, 1),
         )
@@ -284,7 +338,7 @@ class WRN_16_4(nn.Module):
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
 
-    def forward(self, x):
+    def forward(self, x, return_feat=False):
         layers_output_dict = OrderedDict()
 
         out = self.conv1(x)
@@ -300,4 +354,8 @@ class WRN_16_4(nn.Module):
         out = F.avg_pool2d(out, 8)
         layers_output_dict['avg_pool']=out
         out = out.view(-1, self.n_channels)
-        return self.fc(out), layers_output_dict
+
+        if return_feat:
+            return x, self.fc(out), layers_output_dict
+        else:
+            return self.fc(out), layers_output_dict

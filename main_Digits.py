@@ -5,7 +5,7 @@ import torch.optim
 import torch.utils.data
 import torch.nn as nn
 from torch.autograd import Variable
-from models.ada_conv import ConvNet, WAE, Adversary, ResNet18, WRN_16_4
+from models.ada_conv import ConvNet, WAE, WAE_Cifar, Adversary, ResNet18, WRN_16_4
 from torch.utils import model_zoo
 from torchvision.models.resnet import BasicBlock, model_urls, Bottleneck
 import numpy
@@ -116,26 +116,52 @@ def main():
     else:
         evaluation(model, args.data_dir, args.batch_size, kwargs, sd=args.dataset)
 
+def get_lr_cifar(epoch, lr_decay_ratio):
+    """
+    Ref (Origin WRN implementation):
+        https://github.com/szagoruyko/wide-residual-networks/blob/master/pytorch/main.py#L162
+    """
+    if epoch in list(range(1,60)):
+        return lr_decay_ratio**0
+    elif epoch in list(range(60,120)):
+        return lr_decay_ratio**1
+    elif epoch in list(range(120,160)):
+        return lr_decay_ratio**2
+    elif epoch in list(range(160,201)):
+        return lr_decay_ratio**3
+    else:
+        return 0.0
+
 def train(model, exp_name, kwargs):
     print('Pre-train wae')
     # construct train and val dataloader
     # data shape: B X H X W X Channels
     train_loader, val_loader, img_shape = construct_datasets(args.data_dir, args.batch_size, kwargs, args.dataset)
     wae_input_dims = img_shape[1]*img_shape[2]*img_shape[3]
-    wae = WAE(wae_input_dims).cuda()
-
+    wae = None
+    z_dim = 20
+    if args.dataset in ['cifar10']:
+        wae = WAE_Cifar(wae_input_dims).cuda()
+        z_dim = 512
+    else:
+        wae = WAE(wae_input_dims).cuda()
     wae_optimizer = torch.optim.Adam(wae.parameters(), lr=1e-3)
-    discriminator = Adversary().cuda()
+    discriminator = Adversary(z_dim).cuda()
     d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=1e-3)
 
     for epoch in range(1, 20 + 1):
-        wae_train(wae, discriminator, train_loader, wae_optimizer, d_optimizer, epoch)
+        wae_train(wae, discriminator, train_loader, wae_optimizer, d_optimizer, epoch, z_dim)
 
     print('Training task model')
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
     mse_loss = nn.MSELoss().cuda()
-    optimizer = torch.optim.Adam(model.parameters(), args.lr)
+
+    optimizer = None
+    if args.dataset in ['cifar10']:
+        optimizer = torch.optim.SGD(model.parameters(), weight_decay=.0005, momentum=.9, nesterov=True, lr=args.lr)
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), args.lr)
 
     # only augmented domains
     only_virtual_test_images = []
@@ -143,11 +169,28 @@ def train(model, exp_name, kwargs):
     train_loader_iter = iter(train_loader)
     # counter for domain augmentation
     counter_k = 0
+    cur_epoch = 0
+    lr_decay_ratio = 0.2
 
     for t in range(args.start_iters, args.num_iters):
         if t % len(train_loader) == 0:
+            cur_epoch += 1
             layer_neuron_activated_dict = {}
             layer_neuron_activated_dict_mt = {}
+
+        cur_lr = args.lr
+        if cur_epoch in list(range(1,60)):
+            cur_lr = args.lr * lr_decay_ratio**0
+        elif cur_epoch in list(range(60,120)):
+            cur_lr = args.lr * lr_decay_ratio**1
+        elif cur_epoch in list(range(120,160)):
+            cur_lr = args.lr * lr_decay_ratio**2
+        elif cur_epoch in list(range(160,201)):
+            cur_lr = args.lr * lr_decay_ratio**3
+        else:
+            print("Wrong Epoch!")
+        for g in optimizer.param_groups:
+            g['lr'] = cur_lr
 
         batch_time = AverageMeter()
         losses = AverageMeter()
@@ -235,12 +278,15 @@ def train(model, exp_name, kwargs):
 
             # re-train a wae on  the latest domain augmentation
             if counter_k + 1 < args.K:
-                wae = WAE(wae_input_dims).cuda()
+                if args.dataset in ['cifar10']:
+                    wae = WAE_Cifar(wae_input_dims).cuda()
+                else:
+                    wae = WAE(wae_input_dims).cuda()
                 wae_optimizer = torch.optim.Adam(wae.parameters(), lr=1e-3)
-                discriminator = Adversary().cuda()
+                discriminator = Adversary(z_dim).cuda()
                 d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=1e-3)
                 for epoch in range(1, 20 + 1):
-                    wae_train(wae, discriminator, new_aug_loader, wae_optimizer, d_optimizer, epoch)
+                    wae_train(wae, discriminator, new_aug_loader, wae_optimizer, d_optimizer, epoch, z_dim)
             aug_end_time = time.time()
             print('aug duration', (aug_end_time - aug_start_time) / 60)
             counter_k += 1
@@ -329,7 +375,7 @@ def train(model, exp_name, kwargs):
                 'prec': prec1,
             }, args.dataset, exp_name)
 
-def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
+def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch, z_dim):
 
     def sample_z(n_sample=None, dim=None, sigma=None, template=None):
         if n_sample is None:
@@ -343,8 +389,8 @@ def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
 
     z_var = 1
     z_sigma = math.sqrt(z_var)
-    ones = Variable(torch.ones(32, 1)).cuda()
-    zeros = Variable(torch.zeros(32, 1)).cuda()
+    ones = Variable(torch.ones(args.batch_size, 1)).cuda()
+    zeros = Variable(torch.zeros(args.batch_size, 1)).cuda()
     param = 100
     model.train()
     train_loss = 0
@@ -359,9 +405,8 @@ def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
         optimizer.zero_grad()
 
         recon_batch, z_tilde = model(input_comb)
-        z = sample_z(template=z_tilde, sigma=z_sigma)
+        z = sample_z(template=z_tilde, sigma=z_sigma, dim=z_dim)
         log_p_z = log_density_igaussian(z, z_var).view(-1, 1)
-
         D_z = D(z)
         D_z_tilde = D(z_tilde)
         D_loss = F.binary_cross_entropy_with_logits(D_z + log_p_z, ones) + \
@@ -372,7 +417,7 @@ def wae_train(model, D, new_aug_loader, optimizer, d_optimizer, epoch):
         total_D_loss.backward(retain_graph=True)
         d_optimizer.step()
 
-        BCE = F.binary_cross_entropy(recon_batch, input_comb.view(-1, input_dims), reduction='sum')
+        BCE = F.binary_cross_entropy(recon_batch, input_comb.reshape((recon_batch.shape)), reduction='sum')
         Q_loss = F.binary_cross_entropy_with_logits(D_z_tilde + log_p_z, ones)
         loss = BCE + param * Q_loss
         loss.backward(retain_graph=True)
