@@ -1,4 +1,5 @@
 import torchvision
+from torchvision import transforms
 import numpy as np
 import time
 import torch.nn.parallel
@@ -37,13 +38,30 @@ def load_cifar(data_dir, dname='cifar10', split='train'):
     else:
         return get_CIFAR_C_dataset(data_dir, dname, split, level=5)
 
-def get_CIFAR_dataset(data_dir, split):
+def get_CIFAR_dataset(data_dir, split, tf=None):
     trainset = torchvision.datasets.CIFAR10(root=data_dir, train=(split=='train'),
                                             download=True, transform=None)
     imgdata = trainset.data
     labels = trainset.targets
     print ('Loading CIFAR10 '+split+' dataset: '+str(len(labels)))
-    return imgdata, labels
+
+    img_tr = [
+        transforms.Pad(4, padding_mode='reflect'),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomCrop(32),
+        transforms.ToTensor(),
+        transforms.Normalize(np.array([125.3, 123.0, 113.9]) / 255.0, np.array([63.0, 62.1, 66.7]) / 255.0)
+    ]
+    tf = transforms.Compose(img_tr)
+
+    imgs = []
+    for imgd in imgdata:
+        img = Image.fromarray(imgd,'RGB')
+        imgd_aft = tf(img)
+        imgs.append(imgd_aft)
+
+    imgdata_aft = np.stack(imgs, axis=0)
+    return imgdata_aft, labels
 
 
 def get_CIFAR_C_dataset(data_dir, dname, split=None, level=1):    
@@ -53,12 +71,23 @@ def get_CIFAR_C_dataset(data_dir, dname, split=None, level=1):
     print ('Loading CIFAR-C {0} dataset at severity {1}'.format(dname, level))
     imgdata = np.load(data_dir+'/CIFAR-10-C/'+dname+'.npy')
     labels = np.load(data_dir+'/CIFAR-10-C/labels.npy')
-    
-    if level == 0:
-        return imgdata, labels
-    else:
+
+    img_tr = [
+        transforms.ToTensor(),
+        transforms.Normalize(np.array([125.3, 123.0, 113.9]) / 255.0, np.array([63.0, 62.1, 66.7]) / 255.0)
+    ]
+    tf = transforms.Compose(img_tr)
+
+    if level != 0:
         start = (level - 1) * 10000
-        return imgdata[start:start + 10000], labels[start:start + 10000].tolist()
+        imgdata, labels = imgdata[start:start + 10000], labels[start:start + 10000].tolist()
+
+    imgs = []
+    for imgd in imgdata:
+        imgd_aft = tf(imgd)
+        imgs.append(imgd_aft)
+    imgdata_aft = np.stack(imgs, axis=0)
+    return imgdata_aft, labels
     
 
 def load_pacs(data_dir, dname='photo', split='train'):
@@ -185,7 +214,8 @@ def construct_datasets(data_dir, batch_size, kwargs, sd='mnist'):
     def data2loader(imgs, labels):
         assert len(imgs) == len(labels)
         y = torch.stack([torch.from_numpy(np.array(i)) for i in labels])
-        imgs = np.transpose(imgs, (0, 3, 1, 2))  # pytorch CHW, tf HWC
+        if imgs.shape[3] == 3:
+            imgs = np.transpose(imgs, (0, 3, 1, 2))  # pytorch CHW, tf HWC
         X = torch.stack([torch.from_numpy(imgs[i]) for i in range(len(labels))])
         X_dataset = torch.utils.data.TensorDataset(X, y)
         X_loader = torch.utils.data.DataLoader(X_dataset, batch_size=batch_size, shuffle=True, drop_last=True, **kwargs)
